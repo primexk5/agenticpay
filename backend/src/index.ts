@@ -101,6 +101,7 @@ import './events/projections.js';
 import { stripeRouter } from './routes/stripe.js';
 import { SecurityMiddleware, SecurityMonitor } from './middleware/security.js';
 import { sanitizeInput, contentSecurityPolicy } from './middleware/sanitize.js';
+import { requestSizeLimit } from './middleware/request-size-limit.js';
 import { signaturesRouter } from './routes/signatures.js';
 import { createSandboxRouter } from './routes/sandbox.js';
 import { circuitBreakerRouter } from './routes/circuit-breaker.js';
@@ -113,7 +114,7 @@ import { getScheduledTasks } from './config/scheduled-tasks.js';
 import { bullMQMonitorRouter } from './routes/bullmq-monitor.js';
 import { fileUploadRouter } from './routes/file-upload.js';
 import { credentialRotationRouter } from './routes/credential-rotation.js';
-import { startScheduledRotation, stopScheduledRotation } from './config/credential-rotation.js';
+import zkIdentityRouter from './routes/zk-identity.js';
 
 // Validate environment variables at startup
 validateEnv();
@@ -158,6 +159,10 @@ console.warn = (...args) => originalConsole.warn(...formatMessage(args));
 console.error = (...args) => originalConsole.error(...formatMessage(args));
 
 const app = express();
+
+// Security stack: headers, sanitization, payload limits
+SecurityMiddleware.getInstance().applySecurity(app);
+app.use(requestSizeLimit());
 
 // Token-bucket rate limiter (replaces fixed-window tieredRateLimit)
 const apiRateLimiter = tokenBucketRateLimit({ keyPrefix: 'rl:api' });
@@ -252,6 +257,8 @@ apiV1Router.use('/sla', slaRouter);
 apiV1Router.use('/onboarding', onboardingRouter);
 apiV1Router.use('/legacy', legacyRouter);
 apiV1Router.use('/flags', flagsRouter);
+apiV1Router.use('/rate-limit', rateLimitAnalyticsRouter);
+apiV1Router.use('/zk-identity', zkIdentityRouter);
 apiV1Router.use('/kyb', kybRouter);
 apiV1Router.use('/batch', batchRouter);
 apiV1Router.use('/relayer', relayerRouter);
