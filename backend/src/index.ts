@@ -32,6 +32,8 @@ import { messageQueue } from './services/queue.js';
 import { registerDefaultProcessors } from './services/queue-producers.js';
 import { slaTrackingMiddleware } from './middleware/slaTracking.js';
 import { requestIdMiddleware, REQUEST_ID_HEADER } from './middleware/requestId.js';
+import { traceMiddleware } from './middleware/trace.js';
+import { cacheControlNoStore } from './middleware/cache-control.js';
 import { httpLogger, correlationMiddleware } from './middleware/logger.js';
 import { validateEnv, config as getConfig } from './config/env.js';
 import { flagsRouter } from './routes/flags.js';
@@ -129,6 +131,7 @@ if (env.IP_ALLOWLIST_ENABLED || env.IP_ALLOWLIST) {
   console.log(`[IP Allowlist] Enabled with ${allowedIps.length} IP(s)`);
 }
 
+
 const app = express();
 
 // Security stack: headers, sanitization, payload limits
@@ -168,6 +171,7 @@ app.use(
 );
 
 app.use(requestIdMiddleware);
+app.use(traceMiddleware);
 app.use(correlationMiddleware);
 app.use(httpLogger);
 
@@ -187,14 +191,7 @@ app.use(
 
 app.use(slaTrackingMiddleware);
 app.use(sessionMiddleware);
-
-app.use((req: Request, res: Response, next: NextFunction) => {
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    res.setHeader('Cache-Control', 'no-store');
-  }
-  res.setHeader('Vary', 'Accept-Encoding');
-  next();
-});
+app.use(cacheControlNoStore);
 
 app.use(healthRouter);
 app.use('/docs', docsRouter);
