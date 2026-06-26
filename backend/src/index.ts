@@ -134,6 +134,8 @@ import indexerRouter from './routes/indexer.js';
 import aiRoutingRouter from './routes/ai-routing.js';
 import piiRouter from './routes/pii.js';
 import { piiRedactionMiddleware } from './middleware/pii-redaction.js';
+import { reorgRouter } from './routes/reorg.js';
+import { getReorgDetector } from './services/chain/reorg-detector.js';
 
 // Validate environment variables at startup
 validateEnv();
@@ -311,6 +313,7 @@ apiV1Router.use('/escrow', escrowRouter);
 apiV1Router.use('/disputes', disputesRouter);
 apiV1Router.use('/withdrawals', withdrawalsRouter);
 apiV1Router.use('/swap', swapSimulationRouter);
+apiV1Router.use('/chain/reorgs', reorgRouter);
 apiV1Router.get('/compression/metrics', (_req, res) => {
   res.json(getCompressionMetrics());
 });
@@ -569,6 +572,19 @@ server.listen(config.server.port, () => {
     startWebhookWorker();
     startOutboxPublisher({ useBullMQ: Boolean(process.env.REDIS_URL) });
 
+    // Chain reorganization detector (Issue #514)
+    if (
+      process.env.ETHEREUM_RPC_URL ||
+      process.env.POLYGON_RPC_URL ||
+      process.env.STELLAR_RPC_URL
+    ) {
+      getReorgDetector().start().then(() => {
+        console.log('[ReorgDetector] Chain reorg monitoring started');
+      }).catch((err: Error) => {
+        console.error('[ReorgDetector] Startup error:', err.message);
+      });
+    }
+
     // Auto-escalation cron
     setInterval(async () => {
       const count = await disputeService.processEscalations();
@@ -649,6 +665,13 @@ const shutdown = (signal: string) => {
       console.log('Bridge monitor stopped.');
     } catch (err) {
       console.error('Error stopping bridge monitor:', err);
+    }
+
+    try {
+      getReorgDetector().stop();
+      console.log('Reorg detector stopped.');
+    } catch (err) {
+      console.error('Error stopping reorg detector:', err);
     }
 
     clearInterval(analyticsInterval);

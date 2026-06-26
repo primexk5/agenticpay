@@ -27,6 +27,21 @@ enum PaymentStatus {
   failed
   cancelled
   refunded
+  pending_review
+}
+
+enum ReorgEventStatus {
+  detected
+  investigating
+  resolved
+  false_positive
+}
+
+enum TransactionReorgStatus {
+  pending_review
+  re_verified
+  confirmed
+  rolled_back
 }
 
 enum PaymentType {
@@ -150,6 +165,7 @@ model Payment {
   user      User?      @relation(fields: [userId], references: [id])
   project   Project?   @relation(fields: [projectId], references: [id])
   milestone Milestone? @relation(fields: [milestoneId], references: [id])
+  transactionReorgs TransactionReorg[]
 
   @@index([tenantId, createdAt])
   @@index([status], map: "payments_active_status_idx")
@@ -2083,3 +2099,55 @@ model PiiAuditLog {
   @@index([tenantId, createdAt])
   @@map("pii_audit_logs")
 }
+
+// ─── Chain Reorganization Models ─────────────────────────────────────────────
+
+model ReorgEvent {
+  id                 String           @id @default(uuid())
+  network            String
+  detectedAt         DateTime         @default(now()) @map("detected_at")
+  reorgDepth         Int              @map("reorg_depth")
+  safetyThreshold    Int              @map("safety_threshold")
+  canonicalBlockHash String           @map("canonical_block_hash")
+  orphanedBlockHash  String           @map("orphaned_block_hash")
+  fromBlockNumber    Int              @map("from_block_number")
+  toBlockNumber      Int              @map("to_block_number")
+  status             ReorgEventStatus @default(detected)
+  resolvedAt         DateTime?        @map("resolved_at")
+  metadata           Json?
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+
+  affectedTransactions TransactionReorg[]
+
+  @@index([network, detectedAt])
+  @@index([status])
+  @@index([reorgDepth])
+  @@map("reorg_events")
+}
+
+model TransactionReorg {
+  id            String                 @id @default(uuid())
+  reorgEventId  String                 @map("reorg_event_id")
+  txHash        String                 @map("tx_hash")
+  paymentId     String?                @map("payment_id")
+  network       String
+  status        TransactionReorgStatus @default(pending_review)
+  originalBlock Int?                   @map("original_block")
+  reorgDetails  Json?                  @map("reorg_details")
+  reVerifiedAt  DateTime?              @map("re_verified_at")
+  resolvedAt    DateTime?              @map("resolved_at")
+  createdAt     DateTime               @default(now()) @map("created_at")
+  updatedAt     DateTime               @updatedAt @map("updated_at")
+
+  reorgEvent ReorgEvent @relation(fields: [reorgEventId], references: [id])
+  payment    Payment?   @relation(fields: [paymentId], references: [id])
+
+  @@index([reorgEventId])
+  @@index([txHash])
+  @@index([paymentId])
+  @@index([status])
+  @@index([network, createdAt])
+  @@map("transaction_reorgs")
+}
+

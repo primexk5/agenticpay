@@ -103,5 +103,8 @@
     "openapi-fetch": "^0.13.5",
     "openapi-typescript": "^7.4.4",
     "pino-pretty": "^13.0.0"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.62.2"
   }
 }
