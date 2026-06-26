@@ -108,11 +108,7 @@ import { coldStartMonitorRouter } from './routes/cold-start-monitor.js';
 import { rateLimitAnalyticsRouter } from './routes/rate-limit-analytics.js';
 import { startScheduledRotation, stopScheduledRotation } from './config/credential-rotation.js';
 import devDevRouter from './routes/dev/reload.js';
-import { tokenRefreshRouter } from './routes/token-refresh.js';
-import { signingKeysRouter } from './routes/signing-keys.js';
 import { sessionsRouter } from './routes/sessions.js';
-import { tokenAuthMiddleware } from './middleware/token-auth.js';
-import { requestCoalescer, getCoalesceMetrics } from './middleware/request-coalescer.js';
 
 // Validate environment variables at startup
 validateEnv();
@@ -337,6 +333,7 @@ app.use('/api/v1/projects', projectsRouter);
 
 // Two-factor authentication
 app.use('/api/v1/auth/2fa', twoFactorAuthRouter);
+app.use('/api/v1/auth/sessions', sessionsRouter);
 
 // Token refresh & revocation — Issue #512
 app.use('/api/v1/auth', tokenRefreshRouter);

@@ -8,8 +8,7 @@ import { AgenticPayClientOptions } from './types.js';
 export * from './types.js';
 export * from './errors.js';
 export * from './auth.js';
-export { HmacSigner, signFetchRequest } from './auth/hmac.js';
-export type { HmacSignerOptions, SignOptions, SignedHeaders } from './auth/hmac.js';
+export * from './webhooks/verifier.js';
 
 export class AgenticPaySDK {
   readonly client: AgenticPayClient;
