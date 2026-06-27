@@ -338,6 +338,9 @@ app.use('/api/v1/admin/plugins', pluginsRouter);
 // Project + milestone delivery approval workflow
 app.use('/api/v1/projects', projectsRouter);
 
+// Payment categories — Issue #251
+app.use('/api/v1/categories', categoriesRouter);
+
 // Two-factor authentication
 app.use('/api/v1/auth/2fa', twoFactorAuthRouter);
 app.use('/api/v1/auth/sessions', sessionsRouter);
