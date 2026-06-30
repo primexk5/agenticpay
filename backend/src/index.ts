@@ -44,6 +44,9 @@ import { flagsRouter } from './routes/flags.js';
 import { emailRouter } from './routes/email.js';
 import { portfolioRouter } from './routes/portfolio.js';
 import { backupRouter } from './routes/backup.js';
+import { archivalRouter } from './routes/archival.js';
+import { upgradeValidatorRouter } from './routes/upgrade-validator.js';
+import { bridgeMonitorRouter } from './routes/bridge-monitor.js';
 import { pushRouter } from './routes/push.js';
 import { ipAllowlistRouter } from './routes/ip-allowlist.js';
 import { nfcRouter } from './routes/nfc.js';
@@ -108,6 +111,31 @@ import { coldStartMonitorRouter } from './routes/cold-start-monitor.js';
 import { rateLimitAnalyticsRouter } from './routes/rate-limit-analytics.js';
 import { startScheduledRotation, stopScheduledRotation } from './config/credential-rotation.js';
 import devDevRouter from './routes/dev/reload.js';
+import { sessionsRouter } from './routes/sessions.js';
+import { pluginsRouter } from './routes/plugins.js';
+import { outboxRouter } from './routes/outbox.js';
+import { pauseManagerRouter } from './routes/pause-manager.js';
+import { streamingExportRouter } from './routes/streaming-export.js';
+import { startOutboxPublisher, stopOutboxPublisher } from './outbox/index.js';
+import { gasRouter } from './routes/gas.js';
+import { vaultsRouter } from './routes/vaults.js';
+import { createConnectionManager } from './websocket/connection-manager.js';
+import { getBridgeMonitorService } from './services/bridge-monitor/bridge-monitor.js';
+import { swapsRouter } from './routes/swaps.js';
+import { treasuryRouter } from './routes/treasury.js';
+import { apiKeysRouter } from './routes/api-keys.js';
+import { reportsRouter } from './routes/reports.js';
+import { reconciliationRouter } from './routes/reconciliation.js';
+import { liquidityProtectionRouter } from './routes/liquidity-protection.js';
+import { bulkPaymentsRouter } from './routes/bulk-payments.js';
+import { feesRouter } from './routes/fees.js';
+import { apiUsageTracker, checkQuota } from './middleware/api-usage-tracker.js';
+import indexerRouter from './routes/indexer.js';
+import aiRoutingRouter from './routes/ai-routing.js';
+import piiRouter from './routes/pii.js';
+import { piiRedactionMiddleware } from './middleware/pii-redaction.js';
+import { reorgRouter } from './routes/reorg.js';
+import { getReorgDetector } from './services/chain/reorg-detector.js';
 
 // Validate environment variables at startup
 validateEnv();
@@ -176,6 +204,10 @@ app.use(
       'Stripe-Signature',
       'X-Hub-Signature-256',
       'X-Webhook-Key-Id',
+      'X-Signature',
+      'X-Timestamp',
+      'X-Nonce',
+      'X-Tenant-Id',
     ],
   })
 );
@@ -190,6 +222,9 @@ app.use('/webhooks', webhookHandlersRouter);
 
 app.use(express.json());
 app.use(express.text({ type: ['text/csv', 'text/plain'] }));
+app.use('/api', openApiValidator({ validateResponses: process.env.OPENAPI_VALIDATE_RESPONSES === 'true' }));
+// Redact PII from all outgoing JSON API responses — Issue #668
+app.use('/api', piiRedactionMiddleware);
 
 app.use(
   compressionMiddleware({
@@ -201,10 +236,13 @@ app.use(
 
 app.use(slaTrackingMiddleware);
 app.use(sessionMiddleware);
+app.use(tokenAuthMiddleware);
 app.use(cacheControlNoStore);
 
 app.use(healthRouter);
 app.use('/docs', docsRouter);
+app.use('/api-docs', docsRouter);
+app.use('/api', errorsRouter);
 
 // Cold start monitoring dashboard — available before auth/rate-limit middleware
 app.use('/api/v1/cold-start', coldStartMonitorRouter);
@@ -218,6 +256,9 @@ app.use('/api/', apiRateLimiter);
 // warning/throttle/block penalties, layered on top of the token-bucket
 // limiter above (Issue #520).
 app.use('/api/', slidingWindowRateLimit({ keyPrefix: 'sw:api' }));
+
+// Request coalescing: merge identical concurrent GET requests (#509)
+app.use('/api/', requestCoalescer());
 
 // Apply sandbox-aware rate limiting for sandbox endpoints
 const sandboxRateLimiter = tokenBucketRateLimit({ 
@@ -235,6 +276,7 @@ apiV1Router.use('/catalog', catalogRouter);
 apiV1Router.use('/jobs', jobsRouter);
 apiV1Router.use('/queue', queueRouter);
 apiV1Router.use('/queue', bullMQMonitorRouter);
+apiV1Router.use('/outbox', outboxRouter);
 apiV1Router.use('/sla', slaRouter);
 apiV1Router.use('/onboarding', onboardingRouter);
 apiV1Router.use('/legacy', legacyRouter);
@@ -255,6 +297,9 @@ apiV1Router.use('/disputes', disputeRoutes);
 apiV1Router.use('/emails', emailRouter);
 apiV1Router.use('/portfolio', portfolioRouter);
 apiV1Router.use('/backup', backupRouter);
+apiV1Router.use('/archival', archivalRouter);
+apiV1Router.use('/admin/contracts/upgrade', upgradeValidatorRouter);
+apiV1Router.use('/bridge/monitor', bridgeMonitorRouter);
 apiV1Router.use('/ip-allowlist', ipAllowlistRouter);
 apiV1Router.use('/push', pushRouter);
 apiV1Router.use('/nfc', nfcRouter);
@@ -268,11 +313,15 @@ apiV1Router.use('/escrow', escrowRouter);
 apiV1Router.use('/disputes', disputesRouter);
 apiV1Router.use('/withdrawals', withdrawalsRouter);
 apiV1Router.use('/swap', swapSimulationRouter);
+apiV1Router.use('/chain/reorgs', reorgRouter);
 apiV1Router.get('/compression/metrics', (_req, res) => {
   res.json(getCompressionMetrics());
 });
 apiV1Router.get('/pool/metrics', (_req, res) => {
   res.json(poolMetrics.snapshot());
+});
+apiV1Router.get('/coalesce/metrics', (_req, res) => {
+  res.json(getCoalesceMetrics());
 });
 
 app.use('/api/v1', ipAllowlistMiddleware(), apiV1Router);
@@ -316,11 +365,72 @@ app.use('/api/v1/payment-links', paymentLinksRouter);
 // Merchant tax report generation (summary, 1099-K, VAT, nexus, CSV export)
 app.use('/api/v1/tax', taxRouter);
 
+// Third-party backend plugins
+app.use('/api/v1/admin/plugins', pluginsRouter);
+app.use('/api/v1/admin/configuration', configurationRouter);
+
+// Smart contract emergency pause management (Issue #513)
+app.use('/api/v1/admin/contracts/pause', pauseManagerRouter);
+app.use('/api/v1/admin/contracts/upgrade', upgradeValidatorRouter);
+app.use('/api/v1/archival', archivalRouter);
+app.use('/api/v1/bridge/monitor', bridgeMonitorRouter);
+app.use('/api/v1/gas', gasRouter);
+app.use('/api/v1/vaults', vaultsRouter);
+
+// Streaming exports for large datasets (Issue #500)
+app.use('/api/v1/exports', streamingExportRouter);
+
 // Project + milestone delivery approval workflow
 app.use('/api/v1/projects', projectsRouter);
 
+// Payment categories — Issue #251
+app.use('/api/v1/categories', categoriesRouter);
+
 // Two-factor authentication
 app.use('/api/v1/auth/2fa', twoFactorAuthRouter);
+app.use('/api/v1/auth/sessions', sessionsRouter);
+
+// Token refresh & revocation — Issue #512
+app.use('/api/v1/auth', tokenRefreshRouter);
+
+// Session management UI — Issue #512
+app.use('/api/v1/auth/sessions', sessionsRouter);
+
+// HMAC signing key management — Issue #510
+app.use('/api/v1/developers/signing-keys', signingKeysRouter);
+
+// API key usage tracking and quota enforcement — Issue #471
+app.use('/api/v1/developers/api-keys', apiUsageTracker, apiKeysRouter);
+
+// Atomic swaps / HTLC management — Issue #470
+app.use('/api/v1/swaps', swapsRouter);
+
+// Multi-signature timelock treasury management — Issue #469
+app.use('/api/v1/treasury', treasuryRouter);
+
+// Custom report builder with saved templates — Issue #472
+app.use('/api/v1/reports', reportsRouter);
+
+// Payment reconciliation report generator — Issue #465
+app.use('/api/v1/reconciliation', reconciliationRouter);
+
+// Flash loan-protected liquidity provider integration — Issue #466
+app.use('/api/v1/liquidity/protection', liquidityProtectionRouter);
+
+// Bulk payment CSV upload — Issue #467
+app.use('/api/v1/payments/bulk', bulkPaymentsRouter);
+
+// Dynamic fee calculation engine with tiered pricing — Issue #468
+app.use('/api/v1/fees', feesRouter);
+
+// Smart contract event indexer with real-time WebSocket streams — Issue #447
+app.use('/api/v1/indexer', indexerRouter);
+
+// AI-powered payment routing engine — Issue #446
+app.use('/api/v1/routing/ai', aiRoutingRouter);
+
+// PII classification and redaction audit — Issue #668
+app.use('/api/v1/pii', piiRouter);
 
 // Sandbox environment for testing (with relaxed rate limits)
 const sandboxRouter = createSandboxRouter(getSandboxManager(), getMockPaymentProcessor(), getTestDataSeeder());
@@ -390,6 +500,7 @@ if (config.queue.enabled) {
   paymentQueue.start();
 }
 startWebhookWorker();
+startOutboxPublisher({ useBullMQ: Boolean(process.env.REDIS_URL) });
 
 // Auto-escalation cron
 setInterval(async () => {
@@ -412,7 +523,11 @@ const server = http.createServer(app);
 const wsServer = attachWebSocketServer({ server, options: { path: '/ws' } });
 bindWebSocketServer(wsServer);
 app.set('wsServer', wsServer);
-app.use('/api/v1/websocket', createWebSocketRouter(wsServer));
+
+// WebSocket connection manager: IP rate limiting + auth gating (#477)
+const wsConnectionManager = createConnectionManager(server, wsServer, { maxConnectionsPerIp: 10 });
+
+app.use('/api/v1/websocket', createWebSocketRouter(wsServer, wsConnectionManager));
 app.use('/api/v1/analytics', createAnalyticsRouter(wsServer));
 
 const analyticsInterval = setInterval(() => {
@@ -455,6 +570,20 @@ server.listen(config.server.port, () => {
 
     // Webhook worker
     startWebhookWorker();
+    startOutboxPublisher({ useBullMQ: Boolean(process.env.REDIS_URL) });
+
+    // Chain reorganization detector (Issue #514)
+    if (
+      process.env.ETHEREUM_RPC_URL ||
+      process.env.POLYGON_RPC_URL ||
+      process.env.STELLAR_RPC_URL
+    ) {
+      getReorgDetector().start().then(() => {
+        console.log('[ReorgDetector] Chain reorg monitoring started');
+      }).catch((err: Error) => {
+        console.error('[ReorgDetector] Startup error:', err.message);
+      });
+    }
 
     // Auto-escalation cron
     setInterval(async () => {
@@ -474,6 +603,11 @@ server.listen(config.server.port, () => {
     }).catch(() => {
       console.log('[RedisCache] Not available, using in-memory cache only');
     });
+
+    // Bridge monitoring — Issue #475
+    getBridgeMonitorService().start(
+      parseInt(process.env.BRIDGE_MONITOR_POLL_MS ?? '30000', 10),
+    );
   });
 });
 
@@ -513,6 +647,7 @@ const shutdown = (signal: string) => {
       messageQueue.stop();
       paymentQueue.stop();
       stopWebhookWorker();
+      void stopOutboxPublisher();
       console.log('Message queue stopped.');
     } catch (err) {
       console.error('Error stopping message queue:', err);
@@ -523,6 +658,20 @@ const shutdown = (signal: string) => {
       console.log('Batch processor stopped.');
     } catch (err) {
       console.error('Error stopping batch processor:', err);
+    }
+
+    try {
+      getBridgeMonitorService().stop();
+      console.log('Bridge monitor stopped.');
+    } catch (err) {
+      console.error('Error stopping bridge monitor:', err);
+    }
+
+    try {
+      getReorgDetector().stop();
+      console.log('Reorg detector stopped.');
+    } catch (err) {
+      console.error('Error stopping reorg detector:', err);
     }
 
     clearInterval(analyticsInterval);
